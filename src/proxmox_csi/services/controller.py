@@ -10,8 +10,11 @@ from ..csi_pb2 import (
     ControllerPublishVolumeResponse,
     ControllerUnpublishVolumeResponse,
     ControllerExpandVolumeResponse,
+    CreateSnapshotResponse,
+    DeleteSnapshotResponse,
     ControllerGetCapabilitiesResponse,
     Volume,
+    Snapshot,
     ControllerServiceCapability
 )
 from ..csi_pb2_grpc import ControllerServicer
@@ -22,6 +25,8 @@ from ..proxmox.operations import (
     attach_volume,
     detach_volume,
     check_existing_attachments,
+    create_snapshot,
+    clone_volume,
     expand_volume
 )
 from ..volume.volume_id import parse_volume_id
@@ -31,6 +36,7 @@ from ..constants import (
     MIN_VOLUME_SIZE,
     DEFAULT_VOLUME_SIZE
 )
+from google.protobuf.timestamp_pb2 import Timestamp
 
 
 logger = logging.getLogger(__name__)
@@ -42,6 +48,13 @@ class ControllerService(ControllerServicer):
     def __init__(self, config: CSIConfig):
         self.config = config
         self.clients: Dict[str, ProxmoxClient] = {}
+        self.snapshots_enabled = config.enable_experimental_snapshots
+
+        if self.snapshots_enabled:
+            logger.warning(
+                "EXPERIMENTAL: Snapshot/clone support is enabled. "
+                "This requires root@pam authentication and may not work with standard API tokens."
+            )
 
         # Initialize Proxmox clients for each cluster
         for cluster in config.clusters:
@@ -94,9 +107,32 @@ class ControllerService(ControllerServicer):
             context.abort(grpc.StatusCode.INTERNAL, "No nodes available")
         zone = nodes[0]
 
-        # Create new volume
-        logger.info(f"CreateVolume: creating new volume on storage={storage}, size={size_bytes}")
-        volume_id = create_volume(client, region, zone, storage, name, size_bytes)
+        # Handle snapshot/clone source
+        content_source = request.volume_content_source
+        has_content_source = content_source and (
+            content_source.HasField('snapshot') or content_source.HasField('volume')
+        )
+
+        if has_content_source:
+            if not self.snapshots_enabled:
+                context.abort(
+                    grpc.StatusCode.UNIMPLEMENTED,
+                    "Snapshot/clone support is not enabled. "
+                    "Set enable_experimental_snapshots: true in config."
+                )
+
+            if content_source.HasField('snapshot'):
+                source_id = content_source.snapshot.snapshot_id
+                logger.info(f"CreateVolume: cloning from snapshot {source_id}")
+                volume_id = clone_volume(client, source_id, name, self._get_default_region())
+            elif content_source.HasField('volume'):
+                source_id = content_source.volume.volume_id
+                logger.info(f"CreateVolume: cloning from volume {source_id}")
+                volume_id = clone_volume(client, source_id, name, self._get_default_region())
+        else:
+            # Create new volume
+            logger.info(f"CreateVolume: creating new volume on storage={storage}, size={size_bytes}")
+            volume_id = create_volume(client, region, zone, storage, name, size_bytes)
 
         # Return volume
         volume = Volume(
@@ -287,6 +323,73 @@ class ControllerService(ControllerServicer):
             logger.error(f"ControllerExpandVolume failed: {e}", exc_info=True)
             context.abort(grpc.StatusCode.INTERNAL, str(e))
 
+    def CreateSnapshot(self, request, context):
+        """Create snapshot (EXPERIMENTAL)"""
+        if not self.snapshots_enabled:
+            context.abort(
+                grpc.StatusCode.UNIMPLEMENTED,
+                "Snapshot support is not enabled. Set enable_experimental_snapshots: true in config."
+            )
+
+        source_volume_id = request.source_volume_id
+        name = request.name
+
+        if not source_volume_id or not name:
+            context.abort(grpc.StatusCode.INVALID_ARGUMENT, "SourceVolumeID and Name required")
+
+        logger.info(f"CreateSnapshot: {name} from {source_volume_id}")
+
+        try:
+            region, zone, storage, disk = parse_volume_id(source_volume_id, self._get_default_region())
+            client = self.clients.get(region)
+            if not client:
+                context.abort(grpc.StatusCode.NOT_FOUND, f"Region {region} not found")
+
+            snapshot_id = create_snapshot(client, source_volume_id, name, self._get_default_region())
+
+            snapshot = Snapshot(
+                snapshot_id=snapshot_id,
+                source_volume_id=source_volume_id,
+                creation_time=Timestamp(),
+                ready_to_use=True
+            )
+
+            logger.info(f"Snapshot created: {snapshot_id}")
+            return CreateSnapshotResponse(snapshot=snapshot)
+
+        except Exception as e:
+            logger.error(f"CreateSnapshot failed: {e}", exc_info=True)
+            context.abort(grpc.StatusCode.INTERNAL, str(e))
+
+    def DeleteSnapshot(self, request, context):
+        """Delete snapshot (EXPERIMENTAL)"""
+        if not self.snapshots_enabled:
+            context.abort(
+                grpc.StatusCode.UNIMPLEMENTED,
+                "Snapshot support is not enabled. Set enable_experimental_snapshots: true in config."
+            )
+
+        snapshot_id = request.snapshot_id
+        if not snapshot_id:
+            context.abort(grpc.StatusCode.INVALID_ARGUMENT, "SnapshotID required")
+
+        logger.info(f"DeleteSnapshot: {snapshot_id}")
+
+        try:
+            region, zone, storage, disk = parse_volume_id(snapshot_id, self._get_default_region())
+            client = self.clients.get(region)
+            if not client:
+                context.abort(grpc.StatusCode.NOT_FOUND, f"Region {region} not found")
+
+            delete_volume(client, snapshot_id, self._get_default_region())
+
+            logger.info(f"Snapshot deleted: {snapshot_id}")
+            return DeleteSnapshotResponse()
+
+        except Exception as e:
+            logger.error(f"DeleteSnapshot failed: {e}", exc_info=True)
+            context.abort(grpc.StatusCode.INTERNAL, str(e))
+
     def ControllerGetCapabilities(self, request, context):
         """Return controller capabilities"""
         logger.debug("ControllerGetCapabilities called")
@@ -308,5 +411,21 @@ class ControllerService(ControllerServicer):
                 )
             ),
         ]
+
+        if self.snapshots_enabled:
+            capabilities.append(
+                ControllerServiceCapability(
+                    rpc=ControllerServiceCapability.RPC(
+                        type=ControllerServiceCapability.RPC.CREATE_DELETE_SNAPSHOT
+                    )
+                )
+            )
+            capabilities.append(
+                ControllerServiceCapability(
+                    rpc=ControllerServiceCapability.RPC(
+                        type=ControllerServiceCapability.RPC.CLONE_VOLUME
+                    )
+                )
+            )
 
         return ControllerGetCapabilitiesResponse(capabilities=capabilities)

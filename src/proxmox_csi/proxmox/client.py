@@ -211,6 +211,31 @@ class ProxmoxClient:
 
         return self._request('PUT', f'/nodes/{node}/qemu/{vmid}/resize', data=data)
 
+    def copy_volume(self, node: str, storage: str, volume: str,
+                    target_name: str, target_node: Optional[str] = None) -> Dict:
+        """
+        Copy volume (for snapshots/clones)
+
+        EXPERIMENTAL: Requires root@pam authentication (not standard API tokens).
+
+        Args:
+            node: Source node name
+            storage: Storage ID
+            volume: Source volume name
+            target_name: Target volume name
+            target_node: Target node (optional, for cross-node copy)
+
+        Returns:
+            Task response
+        """
+        data = {'target': target_name}
+        if target_node:
+            data['target_node'] = target_node
+
+        return self._request('POST',
+                             f'/nodes/{node}/storage/{storage}/content/{volume}',
+                             data=data)
+
     def get_storage_config(self, storage: str) -> Dict:
         """
         Get storage configuration

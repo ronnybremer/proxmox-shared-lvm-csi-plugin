@@ -42,6 +42,12 @@ CONTROLLER_CAPABILITIES = [
     "EXPAND_VOLUME",
 ]
 
+# Experimental capabilities (require enable_experimental_snapshots and root@pam auth)
+EXPERIMENTAL_CONTROLLER_CAPABILITIES = [
+    "CREATE_DELETE_SNAPSHOT",
+    "CLONE_VOLUME",
+]
+
 NODE_CAPABILITIES = [
     "STAGE_UNSTAGE_VOLUME",
     "EXPAND_VOLUME",

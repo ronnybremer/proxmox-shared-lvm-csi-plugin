@@ -20,6 +20,7 @@ class ProxmoxCluster:
 class CSIConfig:
     """CSI driver configuration"""
     clusters: List[ProxmoxCluster]
+    enable_experimental_snapshots: bool = False
 
 
 def load_config(config_path: str) -> CSIConfig:
@@ -57,4 +58,9 @@ def load_config(config_path: str) -> CSIConfig:
     if not clusters:
         raise ValueError("No clusters configured")
 
-    return CSIConfig(clusters=clusters)
+    enable_experimental_snapshots = data.get('enable_experimental_snapshots', False)
+
+    return CSIConfig(
+        clusters=clusters,
+        enable_experimental_snapshots=enable_experimental_snapshots
+    )

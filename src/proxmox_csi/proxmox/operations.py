@@ -241,6 +241,76 @@ def check_existing_attachments(client: ProxmoxClient, region: str,
     return None, None
 
 
+def create_snapshot(client: ProxmoxClient, source_volume_id: str,
+                    snapshot_name: str, default_region: str = "") -> str:
+    """
+    Create snapshot via Proxmox copy operation
+
+    EXPERIMENTAL: Requires root@pam authentication.
+
+    Args:
+        client: Proxmox API client
+        source_volume_id: Source volume ID
+        snapshot_name: Snapshot name
+        default_region: Default region for parsing volume_id
+
+    Returns:
+        Snapshot volume ID
+    """
+    region, zone, storage, source_disk = parse_volume_id(source_volume_id, default_region)
+
+    snapshot_disk = f"vm-{STORAGE_VMID}-{snapshot_name}"
+
+    logger.info(f"Creating snapshot {snapshot_disk} from {source_disk}")
+
+    client.copy_volume(
+        node=zone,
+        storage=storage,
+        volume=source_disk,
+        target_name=snapshot_disk
+    )
+
+    snapshot_id = create_volume_id(region, zone, storage, snapshot_name, STORAGE_VMID)
+
+    logger.info(f"Snapshot created: {snapshot_id}")
+    return snapshot_id
+
+
+def clone_volume(client: ProxmoxClient, source_volume_id: str,
+                 target_pvc_name: str, default_region: str = "") -> str:
+    """
+    Clone volume from snapshot or volume
+
+    EXPERIMENTAL: Requires root@pam authentication.
+
+    Args:
+        client: Proxmox API client
+        source_volume_id: Source volume ID
+        target_pvc_name: Target PVC name
+        default_region: Default region for parsing volume_id
+
+    Returns:
+        Target volume ID
+    """
+    src_region, src_zone, src_storage, src_disk = parse_volume_id(source_volume_id, default_region)
+
+    target_disk = f"vm-{STORAGE_VMID}-{target_pvc_name}"
+
+    logger.info(f"Cloning {src_disk} to {target_disk}")
+
+    client.copy_volume(
+        node=src_zone,
+        storage=src_storage,
+        volume=src_disk,
+        target_name=target_disk
+    )
+
+    target_id = create_volume_id(src_region, src_zone, src_storage, target_pvc_name, STORAGE_VMID)
+
+    logger.info(f"Volume cloned: {target_id}")
+    return target_id
+
+
 def expand_volume(client: ProxmoxClient, vmid: int, volume_id: str,
                  new_size_bytes: int, default_region: str = "") -> bool:
     """
