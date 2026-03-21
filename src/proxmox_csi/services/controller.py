@@ -29,6 +29,7 @@ from ..proxmox.operations import (
     clone_volume,
     expand_volume
 )
+from ..proxmox.wwn import calculate_wwn
 from ..volume.volume_id import parse_volume_id
 from ..config import CSIConfig
 from ..constants import (
@@ -207,7 +208,7 @@ class ControllerService(ControllerServicer):
                 if existing_vmid == vmid:
                     # Already attached to this VM (idempotent)
                     logger.info(f"Volume {volume_id} already attached to VM {vmid}")
-                    wwn = f"{existing_lun:02d}".encode('utf-8').hex()
+                    wwn = calculate_wwn(existing_lun)
                     return ControllerPublishVolumeResponse(
                         publish_context={
                             'DevicePath': f'/dev/disk/by-id/wwn-0x{wwn}',
