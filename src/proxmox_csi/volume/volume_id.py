@@ -26,13 +26,14 @@ class VolumeID:
         """
         Parse volume ID from string
 
-        Format: /storage/disk
-        Example: /kubedata/vm-9999-static-test
+        Supports two formats:
+        - Dynamic: region/zone/storage/disk (4 parts, created by CreateVolume)
+        - Static:  /storage/disk (2 parts with leading /, for static provisioning)
 
         Args:
-            volume_id: Volume ID string starting with /
-            default_region: Region to use (from driver config)
-            default_zone: Zone to use (can be empty, will be determined dynamically)
+            volume_id: Volume ID string
+            default_region: Region to use when not in volume_id
+            default_zone: Zone to use when not in volume_id
 
         Returns:
             VolumeID object
@@ -40,19 +41,30 @@ class VolumeID:
         Raises:
             ValueError: If volume ID format is invalid
         """
-        if not volume_id.startswith('/'):
-            raise ValueError(f"Invalid volume ID format: {volume_id}, must start with /")
+        # Static provisioning format: /storage/disk
+        if volume_id.startswith('/'):
+            parts = volume_id[1:].split(VOLUME_ID_SEPARATOR)
+            if len(parts) != 2:
+                raise ValueError(f"Invalid volume ID format: {volume_id}, expected /storage/disk")
+            return cls(
+                region=default_region,
+                zone=default_zone,
+                storage=parts[0],
+                disk=parts[1]
+            )
 
-        parts = volume_id[1:].split(VOLUME_ID_SEPARATOR)
-
-        if len(parts) != 2:
-            raise ValueError(f"Invalid volume ID format: {volume_id}, expected /storage/disk")
-
+        # Dynamic provisioning format: region/zone/storage/disk
+        parts = volume_id.split(VOLUME_ID_SEPARATOR)
+        if len(parts) != VOLUME_ID_PARTS:
+            raise ValueError(
+                f"Invalid volume ID format: {volume_id}, "
+                f"expected region/zone/storage/disk or /storage/disk"
+            )
         return cls(
-            region=default_region,
-            zone=default_zone,
-            storage=parts[0],
-            disk=parts[1]
+            region=parts[0],
+            zone=parts[1],
+            storage=parts[2],
+            disk=parts[3]
         )
 
     @classmethod
@@ -82,11 +94,12 @@ def parse_volume_id(volume_id: str, default_region: str = "", default_zone: str 
     """
     Parse volume ID string into components
 
-    Format: /storage/disk
-    Example: /kubedata/vm-9999-static-test
+    Supports two formats:
+    - Dynamic: region/zone/storage/disk (e.g., cluster-1/pve-1/kubedata/vm-9999-pvc-abc)
+    - Static:  /storage/disk (e.g., /kubedata/vm-9999-static-test)
 
     Args:
-        volume_id: Volume ID string starting with /
+        volume_id: Volume ID string
         default_region: Default region if not in volume_id
         default_zone: Default zone if not in volume_id
 
