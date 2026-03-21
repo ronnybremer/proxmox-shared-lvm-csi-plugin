@@ -1,5 +1,5 @@
 # Snapshot RBAC permissions for the CSI controller
-# Apply after base rbac.yaml: kubectl apply -f deploy/snapshots/rbac-patch.yaml
+# Patch into existing ClusterRole: kubectl patch clusterrole proxmox-csi-controller -n kube-system --type=strategic --patch-file deploy/snapshots/rbac-patch.yaml
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:

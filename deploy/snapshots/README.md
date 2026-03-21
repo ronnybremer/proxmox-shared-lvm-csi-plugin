@@ -25,9 +25,10 @@ Snapshot and clone support requires the Proxmox API `copy_volume` operation, whi
        region: "cluster-1"
    ```
 
-2. **Apply snapshot RBAC**:
+2. **Patch snapshot RBAC** into the existing controller ClusterRole:
    ```bash
-   kubectl apply -f deploy/snapshots/rbac-patch.yaml
+   kubectl patch clusterrole proxmox-csi-controller -n kube-system \
+     --type=strategic --patch-file deploy/snapshots/rbac-patch.yaml
    ```
 
 3. **Add the snapshotter sidecar** to the controller:
