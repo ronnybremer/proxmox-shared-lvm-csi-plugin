@@ -2,6 +2,7 @@
 CSI Controller Service Implementation
 """
 import logging
+import threading
 import grpc
 from typing import Dict
 from ..csi_pb2 import (
@@ -29,7 +30,6 @@ from ..proxmox.operations import (
     clone_volume,
     expand_volume
 )
-from ..proxmox.wwn import calculate_wwn
 from ..volume.volume_id import parse_volume_id
 from ..config import CSIConfig
 from ..constants import (
@@ -50,6 +50,14 @@ class ControllerService(ControllerServicer):
         self.config = config
         self.clients: Dict[str, ProxmoxClient] = {}
         self.snapshots_enabled = config.enable_experimental_snapshots
+
+        # Per-VM locks serialize attach/detach so concurrent gRPC threads cannot
+        # race on LUN/slot allocation for the same VM. Without this, two
+        # ControllerPublishVolume calls to the same node both read the VM config,
+        # both pick the same free LUN, and both write scsi<lun> - the second
+        # write evicts the first disk from its slot, corrupting the mount.
+        self._vm_locks: Dict[int, threading.Lock] = {}
+        self._vm_locks_guard = threading.Lock()
 
         if self.snapshots_enabled:
             logger.warning(
@@ -73,6 +81,19 @@ class ControllerService(ControllerServicer):
         if not self.clients:
             return ""
         return next(iter(self.clients.keys()))
+
+    def _vm_lock(self, vmid: int) -> threading.Lock:
+        """Return the lock guarding attach/detach for a given VM.
+
+        Serializes the read-config -> find-free-LUN -> write-config critical
+        section so concurrent attaches to the same VM cannot pick the same slot.
+        """
+        with self._vm_locks_guard:
+            lock = self._vm_locks.get(vmid)
+            if lock is None:
+                lock = threading.Lock()
+                self._vm_locks[vmid] = lock
+            return lock
 
     def CreateVolume(self, request, context):
         """Create volume"""
@@ -201,29 +222,25 @@ class ControllerService(ControllerServicer):
                 vmid, vm_node = vm_info
                 logger.info(f"ControllerPublishVolume: discovered VM {vmid} on node {vm_node} for Kubernetes node {node_id}")
 
-            # CRITICAL: Split-brain protection
-            existing_vmid, existing_lun = check_existing_attachments(client, region, storage, disk)
+            # Serialize the check + attach for this VM. Concurrent attaches to
+            # the same VM must not both read the config, pick the same free LUN,
+            # and write the same scsi<lun> slot (the second write evicts the
+            # first disk and corrupts its mount).
+            with self._vm_lock(vmid):
+                # CRITICAL: Split-brain protection
+                existing_vmid, _ = check_existing_attachments(client, region, storage, disk)
 
-            if existing_vmid is not None:
-                if existing_vmid == vmid:
-                    # Already attached to this VM (idempotent)
-                    logger.info(f"Volume {volume_id} already attached to VM {vmid}")
-                    wwn = calculate_wwn(existing_lun)
-                    return ControllerPublishVolumeResponse(
-                        publish_context={
-                            'DevicePath': f'/dev/disk/by-id/wwn-0x{wwn}',
-                            'lun': str(existing_lun)
-                        }
-                    )
-                else:
-                    # Attached to different VM - SPLIT-BRAIN PROTECTION
+                if existing_vmid is not None and existing_vmid != vmid:
+                    # Attached to a different VM - SPLIT-BRAIN PROTECTION
                     context.abort(
                         grpc.StatusCode.FAILED_PRECONDITION,
                         f"Volume {volume_id} already attached to VM {existing_vmid}"
                     )
 
-            # Attach volume
-            publish_context = attach_volume(client, vmid, volume_id, self._get_default_region())
+                # Attach volume. attach_volume is idempotent: if the disk is
+                # already on this VM it returns the existing device path (with
+                # the WWN read from the VM config) instead of re-attaching.
+                publish_context = attach_volume(client, vmid, volume_id, self._get_default_region())
 
             logger.info(f"Volume {volume_id} attached to VM {vmid}")
             return ControllerPublishVolumeResponse(publish_context=publish_context)
@@ -272,8 +289,9 @@ class ControllerService(ControllerServicer):
                     vmid, vm_node = vm_info
                     logger.info(f"ControllerUnpublishVolume: discovered VM {vmid} on node {vm_node}")
 
-            # Detach volume
-            detach_volume(client, vmid, volume_id, self._get_default_region())
+            # Detach volume (serialized against attach/detach on the same VM)
+            with self._vm_lock(vmid):
+                detach_volume(client, vmid, volume_id, self._get_default_region())
 
             logger.info(f"Volume {volume_id} detached from VM {vmid}")
             return ControllerUnpublishVolumeResponse()

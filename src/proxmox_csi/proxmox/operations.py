@@ -4,7 +4,7 @@ Proxmox volume operations with split-brain protection
 import logging
 from typing import Dict, Optional, Tuple
 from .client import ProxmoxClient
-from .wwn import calculate_wwn, find_free_lun, is_disk_attached
+from .wwn import calculate_wwn, extract_wwn, find_free_lun, is_disk_attached
 from ..constants import STORAGE_VMID, DEVICE_PREFIX
 from ..volume.volume_id import parse_volume_id, create_volume_id
 
@@ -111,7 +111,9 @@ def attach_volume(client: ProxmoxClient, vmid: int, volume_id: str, default_regi
     existing_lun = is_disk_attached(scsi_disks, disk)
     if existing_lun is not None:
         logger.info(f"Volume {volume_id} already attached to VM {vmid} at LUN {existing_lun}")
-        wwn = calculate_wwn(existing_lun)
+        # Report the WWN actually recorded in the VM config so the device path
+        # matches reality even for disks attached under an older WWN scheme.
+        wwn = extract_wwn(scsi_disks.get(f"{DEVICE_PREFIX}{existing_lun}", '')) or calculate_wwn(disk)
         return {
             'DevicePath': f'/dev/disk/by-id/wwn-0x{wwn}',
             'lun': str(existing_lun)
@@ -122,8 +124,8 @@ def attach_volume(client: ProxmoxClient, vmid: int, volume_id: str, default_regi
     if lun is None:
         raise Exception(f"No free LUN available for VM {vmid}")
 
-    # Calculate WWN
-    wwn = calculate_wwn(lun)
+    # Calculate WWN (derived from the disk name - unique and stable per volume)
+    wwn = calculate_wwn(disk)
 
     # Attach disk
     device = f"{DEVICE_PREFIX}{lun}"

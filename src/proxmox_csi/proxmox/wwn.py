@@ -1,28 +1,64 @@
 """
 WWN (World Wide Name) and LUN management for SCSI devices
 """
+import hashlib
 from typing import Optional, Dict
 from ..constants import LUN_MIN, LUN_MAX
 
 
-def calculate_wwn(lun: int) -> str:
+def calculate_wwn(disk_name: str) -> str:
     """
-    Calculate WWN identifier for LUN
+    Calculate a stable, unique WWN identifier for a disk (volume).
 
-    Format: hex(PVC-ID{LUN:02d})
+    The WWN is derived from the disk name only, so it is globally unique per
+    volume and independent of which SCSI LUN/slot the disk happens to occupy.
+    This avoids collisions when two disks land on the same LUN slot (e.g. from
+    concurrent attaches), which previously produced identical WWNs and made
+    device discovery on the node ambiguous.
+
+    Format: 16 hex chars (64-bit), leading nibble forced to 5 so it is exposed
+    as an NAA-64 IEEE-registered identifier (naa.5...), matching how QEMU/Linux
+    surface the ``wwn=0x...`` disk option in ``/sys/block/*/device/wwid``.
 
     Args:
-        lun: LUN number (1-29)
+        disk_name: Disk/volume name (e.g. vm-9999-pvc-abc123)
 
     Returns:
         WWN hex string (without 0x prefix)
 
     Example:
-        >>> calculate_wwn(5)
-        '5043432d49443035'  # hex of "PVC-ID05"
+        >>> len(calculate_wwn("vm-9999-pvc-abc123"))
+        16
+        >>> calculate_wwn("vm-9999-pvc-abc123")[0]
+        '5'
     """
-    identifier = f"PVC-ID{lun:02d}"
-    return identifier.encode('utf-8').hex()
+    digest = hashlib.sha256(disk_name.encode('utf-8')).hexdigest()
+    return '5' + digest[1:16]
+
+
+def extract_wwn(disk_string: str) -> Optional[str]:
+    """
+    Extract the WWN hex (without 0x prefix) from a Proxmox scsi disk config string.
+
+    Reading the WWN actually recorded in the VM config (rather than recomputing
+    it) keeps the idempotent / already-attached paths correct regardless of which
+    scheme the disk was attached under - important during a rollout that changes
+    how WWNs are derived.
+
+    Args:
+        disk_string: e.g. "kubedata:vm-9999-foo,wwn=0x5056...,backup=0"
+
+    Returns:
+        WWN hex string without the 0x prefix, or None if not present
+    """
+    for part in disk_string.split(','):
+        part = part.strip()
+        if part.startswith('wwn='):
+            value = part[len('wwn='):]
+            if value.startswith('0x'):
+                value = value[2:]
+            return value or None
+    return None
 
 
 def find_free_lun(scsi_disks: Dict[str, str], min_lun: int = LUN_MIN,
