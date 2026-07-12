@@ -1,10 +1,12 @@
 """
 Proxmox REST API Client
 
-Implements direct REST API calls to Proxmox VE using token authentication.
+Implements direct REST API calls to Proxmox VE using either API token
+authentication or username/password (ticket) authentication.
 """
 import requests
 import logging
+import threading
 from typing import Dict, Any, Optional, List
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -18,21 +20,36 @@ logger = logging.getLogger(__name__)
 class ProxmoxClient:
     """Proxmox VE REST API Client"""
 
-    def __init__(self, url: str, token_id: str, token_secret: str, insecure: bool = False):
+    def __init__(self, url: str, token_id: Optional[str] = None, token_secret: Optional[str] = None,
+                 insecure: bool = False, username: Optional[str] = None, password: Optional[str] = None):
         """
         Initialize Proxmox API client
+
+        Either token_id/token_secret or username/password must be provided. If
+        username/password are both set they take precedence and token_id/token_secret
+        are ignored.
 
         Args:
             url: Base URL to Proxmox API (e.g., https://proxmox.example.com:8006/api2/json)
             token_id: API token ID (e.g., csi@pve!csi-token)
             token_secret: API token secret
             insecure: Skip TLS certificate verification
+            username: Proxmox username (e.g., root@pam), used for ticket-based auth
+            password: Proxmox password, used for ticket-based auth
         """
         self.base_url = url.rstrip('/api2/json').rstrip('/')
         self.api_url = f"{self.base_url}/api2/json"
         self.token_id = token_id
         self.token_secret = token_secret
+        self.username = username
+        self.password = password
         self.verify = not insecure
+        self.use_password_auth = bool(username and password)
+
+        if not self.use_password_auth and not (token_id and token_secret):
+            raise ValueError(
+                "ProxmoxClient requires either username/password or token_id/token_secret"
+            )
 
         if insecure:
             disable_warnings(InsecureRequestWarning)
@@ -49,11 +66,38 @@ class ProxmoxClient:
         self.session.mount('https://', adapter)
         self.session.mount('http://', adapter)
 
-        # Set authorization header
-        self.session.headers.update({
-            'Authorization': f'PVEAPIToken={token_id}={token_secret}',
-            'Content-Type': 'application/json'
-        })
+        # Guards re-authentication so concurrent requests from the controller's
+        # gRPC threads don't all trigger their own re-login when a ticket expires.
+        self._auth_lock = threading.Lock()
+
+        if self.use_password_auth:
+            self._login()
+        else:
+            self.session.headers.update({
+                'Authorization': f'PVEAPIToken={token_id}={token_secret}',
+            })
+
+        self.session.headers.update({'Content-Type': 'application/json'})
+
+    def _login(self) -> None:
+        """
+        Obtain a new authentication ticket via username/password.
+
+        Sets the PVEAuthCookie session cookie and CSRFPreventionToken header used
+        by Proxmox to authorize subsequent requests on this session.
+        """
+        logger.debug(f"Authenticating to Proxmox API as {self.username}")
+        response = requests.post(
+            f"{self.api_url}/access/ticket",
+            data={'username': self.username, 'password': self.password},
+            verify=self.verify,
+            timeout=10,
+        )
+        response.raise_for_status()
+        ticket_data = response.json()['data']
+
+        self.session.cookies.set('PVEAuthCookie', ticket_data['ticket'])
+        self.session.headers.update({'CSRFPreventionToken': ticket_data['CSRFPreventionToken']})
 
     def _request(self, method: str, path: str, data: Optional[Dict] = None,
                  params: Optional[Dict] = None) -> Any:
@@ -87,6 +131,18 @@ class ProxmoxClient:
             params=params,
             verify=self.verify
         )
+
+        if response.status_code == 401 and self.use_password_auth:
+            logger.info("Proxmox auth ticket expired or invalid, re-authenticating")
+            with self._auth_lock:
+                self._login()
+            response = self.session.request(
+                method,
+                url,
+                json=data,
+                params=params,
+                verify=self.verify
+            )
 
         logger.debug(f"Proxmox API Response: status={response.status_code}")
 

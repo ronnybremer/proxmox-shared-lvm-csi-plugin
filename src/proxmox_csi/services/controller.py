@@ -71,6 +71,8 @@ class ControllerService(ControllerServicer):
                 url=cluster.url,
                 token_id=cluster.token_id,
                 token_secret=cluster.token_secret,
+                username=cluster.username,
+                password=cluster.password,
                 insecure=cluster.insecure
             )
 

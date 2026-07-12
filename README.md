@@ -10,6 +10,7 @@ A minimal Container Storage Interface (CSI) driver for Proxmox Virtual Environme
 - ext4 and xfs filesystem support
 - ReadWriteOnce (SINGLE_NODE_WRITER) access mode
 - Split-brain protection for shared storage
+- Experimental snapshot support
 
 ## Architecture
 
@@ -86,6 +87,18 @@ clusters:
   - url: "https://your-proxmox-host:8006/api2/json"
     token_id: "csi@pve!csi-token"
     token_secret: "your-token-secret"
+    region: "cluster-1"
+    insecure: false  # Set to true to skip TLS verification
+```
+
+Alternatively, authenticate with a username/password instead of an API token by
+setting `username`/`password` on the cluster entry. This is needed when calling experimental APIs in Proxmox VE (very unfortunate). When both username/password and token_id/token_secret are present username/password take precedence and `token_id`/`token_secret` are ignored:
+
+```yaml
+clusters:
+  - url: "https://your-proxmox-host:8006/api2/json"
+    username: "root@pam"
+    password: "your-password"
     region: "cluster-1"
     insecure: false  # Set to true to skip TLS verification
 ```
@@ -240,8 +253,14 @@ with open('/etc/proxmox/config.yaml') as f:
     cfg = yaml.safe_load(f)
 c = cfg['clusters'][0]
 
-# Initialize client
-client = ProxmoxClient(c['url'], c['token_id'], c['token_secret'], c.get('insecure', False))
+# Initialize client (token auth shown; pass username=/password= instead for
+# ticket-based auth)
+client = ProxmoxClient(
+    url=c['url'],
+    token_id=c.get('token_id'),
+    token_secret=c.get('token_secret'),
+    insecure=c.get('insecure', False)
+)
 
 # Create volume
 # IMPORTANT: filename must start with "vm-9999-" prefix
