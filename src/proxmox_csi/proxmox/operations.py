@@ -285,7 +285,7 @@ def create_snapshot(client: ProxmoxClient, source_volume_id: str,
         raise UnsupportedVolumeFormatError(
             f"Volume {source_volume_id} has format '{volume_format or 'unknown'}'; "
             "Proxmox only supports snapshots on qcow2 volumes. Recreate the volume "
-            "with format=qcow2 to enable snapshot support."
+            "with a storage class having volumeFormat=qcow2 to enable snapshot support."
         )
 
     snapshot_disk = build_disk_name(snapshot_name, STORAGE_VMID, 'qcow2')
