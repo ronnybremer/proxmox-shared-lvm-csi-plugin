@@ -202,7 +202,7 @@ class ProxmoxClient:
         return self._request('POST', f'/nodes/{node}/qemu/{vmid}/config', data=config)
 
     def create_vm_disk(self, vmid: int, node: str, storage: str,
-                      filename: str, size_bytes: int) -> Dict:
+                      filename: str, size_bytes: int, format: str) -> Dict:
         """
         Create VM disk
 
@@ -212,6 +212,9 @@ class ProxmoxClient:
             storage: Storage ID
             filename: Disk filename
             size_bytes: Size in bytes
+            format: Disk format (e.g. 'raw', 'qcow2'); always sent explicitly
+                to Proxmox so the created volume's format never depends on the
+                storage's own default
 
         Returns:
             Response data
@@ -221,11 +224,12 @@ class ProxmoxClient:
         data = {
             'vmid': vmid,
             'filename': filename,
-            'size': f'{int(size_gb)}G'
+            'size': f'{int(size_gb)}G',
+            'format': format
         }
 
         logger.info(f"create_vm_disk: vmid={vmid}, node={node}, storage={storage}, "
-                   f"filename={filename}, size_bytes={size_bytes}, size_gb={size_gb:.2f}")
+                   f"filename={filename}, size_bytes={size_bytes}, size_gb={size_gb:.2f}, format={format}")
         logger.debug(f"create_vm_disk: POST /nodes/{node}/storage/{storage}/content with data={data}")
 
         return self._request('POST', f'/nodes/{node}/storage/{storage}/content',
@@ -307,6 +311,38 @@ class ProxmoxClient:
             if stor.get('storage') == storage:
                 return stor
         raise ValueError(f"Storage {storage} not found")
+
+    def get_storage_content(self, node: str, storage: str) -> List[Dict]:
+        """
+        List the content (volumes) of a storage on a node
+
+        Args:
+            node: Node name
+            storage: Storage ID
+
+        Returns:
+            List of volume dictionaries (each includes e.g. 'volid', 'format', 'size')
+        """
+        return self._request('GET', f'/nodes/{node}/storage/{storage}/content')
+
+    def get_volume_format(self, node: str, storage: str, disk: str) -> Optional[str]:
+        """
+        Look up the on-disk format (e.g. 'raw', 'qcow2') of a volume
+
+        Args:
+            node: Node name
+            storage: Storage ID
+            disk: Disk/volume name (e.g. vm-9999-my-pvc)
+
+        Returns:
+            Format string as reported by Proxmox, or None if the volume was not
+            found in the storage content listing
+        """
+        volid = f"{storage}:{disk}"
+        for vol in self.get_storage_content(node, storage):
+            if vol.get('volid') == volid:
+                return vol.get('format')
+        return None
 
     def extract_scsi_disks(self, vm_config: Dict) -> Dict[str, str]:
         """

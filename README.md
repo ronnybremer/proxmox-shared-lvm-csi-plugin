@@ -6,7 +6,7 @@ A minimal Container Storage Interface (CSI) driver for Proxmox Virtual Environme
 
 - Dynamic volume provisioning
 - Volume expansion (online)
-- Raw block volumes
+- Raw or QCOW2 block volumes
 - ext4 and xfs filesystem support
 - ReadWriteOnce (SINGLE_NODE_WRITER) access mode
 - Split-brain protection for shared storage
@@ -80,7 +80,7 @@ Create an API token in Proxmox with the following permissions:
 
 ### 2. Create Configuration Secret
 
-Edit `deploy/secret.yaml` with your Proxmox credentials:
+Edit `deploy/secret.yaml` with your Proxmox token credentials (preferred option):
 
 ```yaml
 clusters:
@@ -269,7 +269,8 @@ result = client.create_vm_disk(
     node='pve20',           # Your Proxmox node name
     storage='kubedata',     # Your LVM storage name
     filename='vm-9999-myapp-data',  # Must start with vm-9999-
-    size_bytes=10 * 1024**3  # 10GB
+    size_bytes=10 * 1024**3,  # 10GB
+    format='raw'             # 'raw' or 'qcow2'
 )
 print(f"Volume created: {result}")
 EOF
@@ -384,6 +385,10 @@ spec:
 - `csi.storage.k8s.io/fstype`: Filesystem type (optional, default: ext4)
   - `ext4`: ext4 filesystem
   - `xfs`: xfs filesystem
+- `volumeFormat`: Proxmox disk format for newly created volumes (optional, default: `raw`)
+  - The format is always sent to Proxmox explicitly, so the result never depends on the storage default
+  - `raw`: Raw format (default)
+  - `qcow2`: qcow2 format; required for [snapshot support](deploy/snapshots/README.md)
 
 ### Environment Variables
 
@@ -520,7 +525,8 @@ kubectl logs -n kube-system -l app=proxmox-csi-node -c proxmox-csi-node
 - No encryption support (LUKS)
 - No topology awareness (single cluster)
 - Maximum 29 volumes per node (QEMU SCSI limitation, LUN 0 avoided)
-- No snapshot or clone support (Proxmox API limitation with LVM storage)
+- No clone support (Proxmox API limitation with LVM storage)
+- Snapshot support is currently not working, as the underlying Promox API (as of 9.2.3) is still marked as **DO NOT USE**
 
 ## License
 

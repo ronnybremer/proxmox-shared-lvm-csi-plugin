@@ -4,8 +4,32 @@ Volume ID parsing and generation
 Volume ID format: region/zone/storage/disk-name
 Example: cluster-1/pve-1/alletra-vg/vm-9999-pvc-abc123
 """
-from typing import Tuple
+from typing import Optional, Tuple
 from ..constants import VOLUME_ID_SEPARATOR, VOLUME_ID_PARTS
+
+
+def build_disk_name(pvc_name: str, vmid: int, volume_format: Optional[str] = None) -> str:
+    """
+    Build the Proxmox disk/volume filename for a PVC
+
+    Proxmox infers a volume's on-disk format from its filename extension for
+    file-based content (e.g. directory storage backing qcow2), so a qcow2
+    volume's filename must end in '.qcow2' or Proxmox silently creates it as
+    raw regardless of the 'format' API parameter.
+
+    Args:
+        pvc_name: PVC name
+        vmid: VM ID for volume storage
+        volume_format: Disk format ('raw' or 'qcow2'); if 'qcow2', '.qcow2' is
+            appended to the filename
+
+    Returns:
+        Disk filename, e.g. 'vm-9999-pvc-abc123' or 'vm-9999-pvc-abc123.qcow2'
+    """
+    disk_name = f"vm-{vmid}-{pvc_name}"
+    if volume_format == 'qcow2':
+        disk_name += '.qcow2'
+    return disk_name
 
 
 class VolumeID:
@@ -68,7 +92,8 @@ class VolumeID:
         )
 
     @classmethod
-    def create(cls, region: str, zone: str, storage: str, pvc_name: str, vmid: int = 9999) -> 'VolumeID':
+    def create(cls, region: str, zone: str, storage: str, pvc_name: str, vmid: int = 9999,
+              volume_format: Optional[str] = None) -> 'VolumeID':
         """
         Create new volume ID
 
@@ -78,11 +103,14 @@ class VolumeID:
             storage: Storage ID
             pvc_name: PVC name
             vmid: VM ID for volume storage (default: 9999)
+            volume_format: Disk format ('raw' or 'qcow2'); if 'qcow2', the
+                disk name carries a '.qcow2' suffix, matching the actual
+                filename Proxmox creates on disk
 
         Returns:
             VolumeID object
         """
-        disk_name = f"vm-{vmid}-{pvc_name}"
+        disk_name = build_disk_name(pvc_name, vmid, volume_format)
         return cls(region=region, zone=zone, storage=storage, disk=disk_name)
 
     def to_tuple(self) -> Tuple[str, str, str, str]:
@@ -110,7 +138,8 @@ def parse_volume_id(volume_id: str, default_region: str = "", default_zone: str 
     return vid.to_tuple()
 
 
-def create_volume_id(region: str, zone: str, storage: str, pvc_name: str, vmid: int = 9999) -> str:
+def create_volume_id(region: str, zone: str, storage: str, pvc_name: str, vmid: int = 9999,
+                    volume_format: Optional[str] = None) -> str:
     """
     Create volume ID string
 
@@ -120,9 +149,12 @@ def create_volume_id(region: str, zone: str, storage: str, pvc_name: str, vmid: 
         storage: Storage ID
         pvc_name: PVC name
         vmid: VM ID (default: 9999)
+        volume_format: Disk format ('raw' or 'qcow2'); if 'qcow2', the
+            embedded disk name carries a '.qcow2' suffix, matching the actual
+            filename Proxmox creates on disk
 
     Returns:
         Volume ID string
     """
-    vid = VolumeID.create(region, zone, storage, pvc_name, vmid)
+    vid = VolumeID.create(region, zone, storage, pvc_name, vmid, volume_format)
     return str(vid)

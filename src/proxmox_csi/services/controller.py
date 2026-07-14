@@ -28,14 +28,17 @@ from ..proxmox.operations import (
     check_existing_attachments,
     create_snapshot,
     clone_volume,
-    expand_volume
+    expand_volume,
+    UnsupportedVolumeFormatError
 )
 from ..volume.volume_id import parse_volume_id
 from ..config import CSIConfig
 from ..constants import (
     DRIVER_NAME,
     MIN_VOLUME_SIZE,
-    DEFAULT_VOLUME_SIZE
+    DEFAULT_VOLUME_SIZE,
+    SUPPORTED_VOLUME_FORMATS,
+    DEFAULT_VOLUME_FORMAT
 )
 from google.protobuf.timestamp_pb2 import Timestamp
 
@@ -121,6 +124,13 @@ class ControllerService(ControllerServicer):
         if not storage:
             context.abort(grpc.StatusCode.INVALID_ARGUMENT, "storage parameter required")
 
+        volume_format = params.get('volumeFormat') or DEFAULT_VOLUME_FORMAT
+        if volume_format not in SUPPORTED_VOLUME_FORMATS:
+            context.abort(
+                grpc.StatusCode.INVALID_ARGUMENT,
+                f"volumeFormat must be one of {SUPPORTED_VOLUME_FORMATS}, got '{volume_format}'"
+            )
+
         logger.debug(f"CreateVolume: storage={storage}, all_params={params}")
 
         # Get region/zone from topology (simplified - use first cluster/node)
@@ -155,8 +165,9 @@ class ControllerService(ControllerServicer):
                 volume_id = clone_volume(client, source_id, name, self._get_default_region())
         else:
             # Create new volume
-            logger.info(f"CreateVolume: creating new volume on storage={storage}, size={size_bytes}")
-            volume_id = create_volume(client, region, zone, storage, name, size_bytes)
+            logger.info(f"CreateVolume: creating new volume on storage={storage}, size={size_bytes}, "
+                       f"format={volume_format}")
+            volume_id = create_volume(client, region, zone, storage, name, size_bytes, volume_format)
 
         # Return volume
         volume = Volume(
@@ -368,16 +379,25 @@ class ControllerService(ControllerServicer):
 
             snapshot_id = create_snapshot(client, source_volume_id, name, self._get_default_region())
 
+            creation_time = Timestamp()
+            creation_time.GetCurrentTime()
+
             snapshot = Snapshot(
                 snapshot_id=snapshot_id,
                 source_volume_id=source_volume_id,
-                creation_time=Timestamp(),
+                creation_time=creation_time,
                 ready_to_use=True
             )
 
             logger.info(f"Snapshot created: {snapshot_id}")
             return CreateSnapshotResponse(snapshot=snapshot)
 
+        except UnsupportedVolumeFormatError as e:
+            # Permanent condition for this volume as-is (not transient): fail without
+            # retry so external-snapshotter records it in the VolumeSnapshotContent
+            # status instead of looping.
+            logger.error(f"CreateSnapshot failed: {e}")
+            context.abort(grpc.StatusCode.FAILED_PRECONDITION, str(e))
         except Exception as e:
             logger.error(f"CreateSnapshot failed: {e}", exc_info=True)
             context.abort(grpc.StatusCode.INTERNAL, str(e))

@@ -6,14 +6,24 @@ from typing import Dict, Optional, Tuple
 from .client import ProxmoxClient
 from .wwn import calculate_wwn, extract_wwn, find_free_lun, is_disk_attached
 from ..constants import STORAGE_VMID, DEVICE_PREFIX
-from ..volume.volume_id import parse_volume_id, create_volume_id
+from ..volume.volume_id import parse_volume_id, create_volume_id, build_disk_name
 
 
 logger = logging.getLogger(__name__)
 
 
+class UnsupportedVolumeFormatError(Exception):
+    """
+    Raised when CreateSnapshot is attempted on a volume whose format does not
+    support snapshots. Per Proxmox documentation, snapshots require qcow2;
+    this is a permanent condition for the volume as-is and must not be retried
+    by the caller without recreating the volume in qcow2 format.
+    """
+
+
 def create_volume(client: ProxmoxClient, region: str, zone: str,
-                 storage: str, pvc_name: str, size_bytes: int) -> str:
+                 storage: str, pvc_name: str, size_bytes: int,
+                 volume_format: str) -> str:
     """
     Create LVM volume on Proxmox
 
@@ -24,26 +34,32 @@ def create_volume(client: ProxmoxClient, region: str, zone: str,
         storage: Storage ID
         pvc_name: PVC name
         size_bytes: Volume size in bytes
+        volume_format: Disk format to request ('raw' or 'qcow2'); always sent
+            to Proxmox explicitly so behavior never depends on the storage's
+            own default. 'qcow2' is required for snapshot support.
 
     Returns:
         Volume ID string
     """
-    disk_name = f"vm-{STORAGE_VMID}-{pvc_name}"
+    disk_name = build_disk_name(pvc_name, STORAGE_VMID, volume_format)
     size_gib = size_bytes / (1024 ** 3)
 
-    logger.info(f"Creating volume {disk_name} on {zone}/{storage}, size={size_bytes} bytes ({size_gib:.2f} GiB)")
+    logger.info(f"Creating volume {disk_name} on {zone}/{storage}, size={size_bytes} bytes "
+               f"({size_gib:.2f} GiB), format={volume_format}")
     logger.debug(f"create_volume params: region={region}, zone={zone}, storage={storage}, "
-                f"pvc_name={pvc_name}, STORAGE_VMID={STORAGE_VMID}, disk_name={disk_name}")
+                f"pvc_name={pvc_name}, STORAGE_VMID={STORAGE_VMID}, disk_name={disk_name}, "
+                f"volume_format={volume_format}")
 
     client.create_vm_disk(
         vmid=STORAGE_VMID,
         node=zone,
         storage=storage,
         filename=disk_name,
-        size_bytes=size_bytes
+        size_bytes=size_bytes,
+        format=volume_format
     )
 
-    volume_id = create_volume_id(region, zone, storage, pvc_name, STORAGE_VMID)
+    volume_id = create_volume_id(region, zone, storage, pvc_name, STORAGE_VMID, volume_format)
 
     logger.info(f"Volume created: {volume_id}")
     return volume_id
@@ -258,10 +274,21 @@ def create_snapshot(client: ProxmoxClient, source_volume_id: str,
 
     Returns:
         Snapshot volume ID
+
+    Raises:
+        UnsupportedVolumeFormatError: If the source volume's format is not qcow2
     """
     region, zone, storage, source_disk = parse_volume_id(source_volume_id, default_region)
 
-    snapshot_disk = f"vm-{STORAGE_VMID}-{snapshot_name}"
+    volume_format = client.get_volume_format(zone, storage, source_disk)
+    if volume_format != 'qcow2':
+        raise UnsupportedVolumeFormatError(
+            f"Volume {source_volume_id} has format '{volume_format or 'unknown'}'; "
+            "Proxmox only supports snapshots on qcow2 volumes. Recreate the volume "
+            "with format=qcow2 to enable snapshot support."
+        )
+
+    snapshot_disk = build_disk_name(snapshot_name, STORAGE_VMID, 'qcow2')
 
     logger.info(f"Creating snapshot {snapshot_disk} from {source_disk}")
 
@@ -272,7 +299,7 @@ def create_snapshot(client: ProxmoxClient, source_volume_id: str,
         target_name=snapshot_disk
     )
 
-    snapshot_id = create_volume_id(region, zone, storage, snapshot_name, STORAGE_VMID)
+    snapshot_id = create_volume_id(region, zone, storage, snapshot_name, STORAGE_VMID, 'qcow2')
 
     logger.info(f"Snapshot created: {snapshot_id}")
     return snapshot_id
@@ -296,7 +323,10 @@ def clone_volume(client: ProxmoxClient, source_volume_id: str,
     """
     src_region, src_zone, src_storage, src_disk = parse_volume_id(source_volume_id, default_region)
 
-    target_disk = f"vm-{STORAGE_VMID}-{target_pvc_name}"
+    # Clone must be created in the same format as its source; the source disk
+    # name itself carries a '.qcow2' suffix when it was created in that format.
+    volume_format = 'qcow2' if src_disk.endswith('.qcow2') else None
+    target_disk = build_disk_name(target_pvc_name, STORAGE_VMID, volume_format)
 
     logger.info(f"Cloning {src_disk} to {target_disk}")
 
@@ -307,7 +337,7 @@ def clone_volume(client: ProxmoxClient, source_volume_id: str,
         target_name=target_disk
     )
 
-    target_id = create_volume_id(src_region, src_zone, src_storage, target_pvc_name, STORAGE_VMID)
+    target_id = create_volume_id(src_region, src_zone, src_storage, target_pvc_name, STORAGE_VMID, volume_format)
 
     logger.info(f"Volume cloned: {target_id}")
     return target_id

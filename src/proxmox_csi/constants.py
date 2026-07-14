@@ -22,6 +22,13 @@ DEVICE_PREFIX = "scsi"
 MIN_VOLUME_SIZE = 512 * 1024 * 1024  # 512 MiB
 DEFAULT_VOLUME_SIZE = 10 * 1024 * 1024 * 1024  # 10 GiB
 
+# Volume formats accepted for the StorageClass 'volumeFormat' parameter.
+# A format is always sent to Proxmox explicitly on create (never omitted), so
+# behavior does not depend on the storage's own default. If the parameter is
+# not set, DEFAULT_VOLUME_FORMAT is used. 'qcow2' is required for snapshot support.
+SUPPORTED_VOLUME_FORMATS = ("raw", "qcow2")
+DEFAULT_VOLUME_FORMAT = "raw"
+
 # Filesystem types
 FS_TYPE_EXT4 = "ext4"
 FS_TYPE_XFS = "xfs"

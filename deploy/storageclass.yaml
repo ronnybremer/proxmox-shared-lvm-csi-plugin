@@ -8,6 +8,7 @@ provisioner: csi.proxmox.sqreept.com
 parameters:
   storage: "alletra-vg"  # Your Proxmox shared LVM storage name
   cache: "directsync"     # Cache mode: none, writethrough, writeback, directsync
+  # volumeFormat: "raw"   # Optional: "raw" (default) or "qcow2". qcow2 is required for snapshot support.
   csi.storage.k8s.io/fstype: "ext4"
 volumeBindingMode: WaitForFirstConsumer
 allowVolumeExpansion: true
@@ -23,6 +24,7 @@ provisioner: csi.proxmox.sqreept.com
 parameters:
   storage: "alletra-vg"  # Your Proxmox shared LVM storage name
   cache: "directsync"     # Cache mode: none, writethrough, writeback, directsync
+  # volumeFormat: "raw"   # Optional: "raw" (default) or "qcow2". qcow2 is required for snapshot support.
   csi.storage.k8s.io/fstype: "xfs"
 volumeBindingMode: WaitForFirstConsumer
 allowVolumeExpansion: true
@@ -38,6 +40,7 @@ provisioner: csi.proxmox.sqreept.com
 parameters:
   storage: "alletra-vg"  # Your Proxmox shared LVM storage name
   cache: "directsync"     # Cache mode: none, writethrough, writeback, directsync
+  # volumeFormat: "raw"   # Optional: "raw" (default) or "qcow2". qcow2 is required for snapshot support.
 volumeBindingMode: WaitForFirstConsumer
 allowVolumeExpansion: true
 reclaimPolicy: Delete
